@@ -58,16 +58,16 @@ extern uint64_t mmap_filter_size;
 
 // #define NVMSIZE_DEFAULT   (480L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (128L * (1024L * 1024L * 1024L))
-#define NVMSIZE_DEFAULT (90L * (1024L * 1024L * 1024L))
+#define NVMSIZE_DEFAULT (63L * (1024L * 1024L * 1024L))
 //#define DRAMSIZE_DEFAULT  (27L * (1024L * 1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (25L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (63L * (1024L * 1024L * 1024L))
 //#define DRAMSIZE_DEFAULT  (27445428224)
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
 
-#define DRAMPATH_DEFAULT  "/dev/dax1.0"
-#define NVMPATH_DEFAULT   "/dev/dax0.0"
+#define DRAMPATH_DEFAULT  "/dev/dax0.0"
+#define NVMPATH_DEFAULT   "/dev/dax1.0"
 
 //#define PAGE_SIZE (1024 * 1024 * 1024)
 //#define PAGE_SIZE (2 * (1024 * 1024))
@@ -85,7 +85,7 @@ extern uint64_t mmap_filter_size;
 #define GIGA_PFN_MASK   (GIGAPAGE_MASK ^ UINT64_MAX)
 
 #define START_THREAD_DEFAULT 0
-#define FAULT_THREAD_CPU_DEFAULT  (59)
+#define FAULT_THREAD_CPU_DEFAULT  (26)
 #define STATS_THREAD_CPU_DEFAULT  (0)
 
 extern uint64_t fault_thread_cpu;

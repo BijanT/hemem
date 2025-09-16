@@ -17,21 +17,28 @@
 #include <fcntl.h>
 #include <math.h>
 #include <signal.h>
+#include <errno.h>
 
 #include "hemem.h"
 #include "pebs.h"
 #include "timer.h"
 #include "spsc-ring.h"
 
-#define LOCAL_NUMA 1
+#define LOCAL_NUMA 0
 #define CHA_MSR_PMON_BASE 0x0E00L
 #define CHA_MSR_PMON_CTL_BASE 0x0E01L
 #define CHA_MSR_PMON_FILTER0_BASE 0x0E05L
-//#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L // No FULERT1 on Icelake
+#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L // No FULERT1 on Icelake
 #define CHA_MSR_PMON_STATUS_BASE 0x0E07L
 #define CHA_MSR_PMON_CTR_BASE 0x0E08L
-#define NUM_CHA_BOXES 18 // There are 32 CHA boxes in icelake server. After the first 18 boxes, the couter offsets change.
+#define CHA_OFFSET 0x10
+#define NUM_CHA_BOXES 14 // There are 32 CHA boxes in icelake server. After the first 18 boxes, the couter offsets change.
 #define NUM_CHA_COUNTERS 4
+
+#define FILTER1_LOCAL_VAL ((0x182 << 20) + 1)
+#define FILTER1_REMOTE_VAL ((0x182 << 20) + 2)
+#define CTL_OCCUPANCY 0x404336
+#define CTL_INSERTS 0x404335
 
 int colloid_msr_fd;
 double smoothed_occ_local, occ_local;
@@ -95,7 +102,7 @@ FILE *colloid_log_f = NULL;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
-int pebs_core_list[] = {1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51,53,55,57,59,61,63}; // should contain PEBS_NPROCS entries
+int pebs_core_list[] = {0,2,4,6,8,10,12,14,16,18,20,22,24,26}; // should contain PEBS_NPROCS entries
 
 volatile bool need_cool_dram = false;
 volatile bool need_cool_nvm = false;
@@ -154,10 +161,10 @@ static inline void sample_cha_ctr(int cha, int ctr) {
     uint64_t msr_val;
     int ret;
 
-    msr_num = CHA_MSR_PMON_CTR_BASE + (0xE * cha) + ctr;
+    msr_num = CHA_MSR_PMON_CTR_BASE + (CHA_OFFSET * cha) + ctr;
     ret = pread(colloid_msr_fd, &msr_val, sizeof(msr_val), msr_num);
     if (ret != sizeof(msr_val)) {
-        perror("ERROR: failed to read MSR");
+        printf("ERROR: failed to read MSR %d %d %d %x\n", ret, cha, ctr, msr_num);
     }
     prev_ctr_val[cha][ctr] = cur_ctr_val[cha][ctr];
     cur_ctr_val[cha][ctr] = msr_val;
@@ -180,36 +187,36 @@ static void colloid_setup(int cpu) {
   uint64_t msr_val;
   for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
 	// Icelake offset multiplier is 0xE
-      msr_num = CHA_MSR_PMON_FILTER0_BASE + (0xE * cha); // Filter0
+      msr_num = CHA_MSR_PMON_FILTER0_BASE + (CHA_OFFSET * cha); // Filter0
       msr_val = 0x00000000; // default; no filtering
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
-	  printf("wrmsr FILTER0 failed for cha: %d\n", cha);
+	  printf("wrmsr FILTER0 failed for cha: %d %d %d\n", cha, errno, cha);
           perror("wrmsr FILTER0 failed");
       }
 
-      //msr_num = CHA_MSR_PMON_FILTER1_BASE + (0xE * cha); // Filter1
-      //msr_val = (cha%2 == 0)?(0x40432):(0x40431); // Filter DRd of local/remote on even/odd CHA boxes
-      //ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      //if (ret != 8) {
-      //    perror("wrmsr FILTER1 failed");
-      //}
+      msr_num = CHA_MSR_PMON_FILTER1_BASE + (CHA_OFFSET * cha); // Filter1
+      msr_val = (cha%2 == 0)?FILTER1_LOCAL_VAL:FILTER1_REMOTE_VAL; // Filter DRd of local/remote on even/odd CHA boxes
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr FILTER1 failed");
+      }
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 0; // counter 0
-      msr_val = (cha%2==0)?(0x00c8168600400136):(0x00c8170600400136); // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
+      msr_num = CHA_MSR_PMON_CTL_BASE + (CHA_OFFSET * cha) + 0; // counter 0
+      msr_val = CTL_OCCUPANCY; // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER0 failed");
       }
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 1; // counter 1
-      msr_val = (cha%2==0)?(0x00c8168600400135):(0x00c8170600400135); // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
+      msr_num = CHA_MSR_PMON_CTL_BASE + (CHA_OFFSET * cha) + 1; // counter 1
+      msr_val = CTL_INSERTS; // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER1 failed");
       }
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 2; // counter 2
+      msr_num = CHA_MSR_PMON_CTL_BASE + (CHA_OFFSET * cha) + 2; // counter 2
       msr_val = 0x400000; // CLOCKTICKS
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
@@ -1795,8 +1802,8 @@ void pebs_init(void)
   else
     hemem_cpu_start = START_THREAD_DEFAULT;
   
-  scanning_thread_cpu = 63;
-  migration_thread_cpu = 61;
+  scanning_thread_cpu = 24;
+  migration_thread_cpu = 26;
 
   for (int i = start_cpu; i < start_cpu + num_cores; i++) {
     //perf_page[i][READ] = perf_setup(0x1cd, 0x4, i);  // MEM_TRANS_RETIRED.LOAD_LATENCY_GT_4
