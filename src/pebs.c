@@ -1305,6 +1305,14 @@ void *pebs_policy_thread()
           continue;
         }
         pi = ((double)top[i].accesses)/((double)total_accesses);
+        // Test if we should move this page alone
+        if(pi <= target_delta) {
+          if(pi > best_delta) {
+            best_i = i;
+            best_j = -1;
+            best_delta = pi;
+          }
+        }
         for(;cur_j < bottom_count; cur_j++) {
           if(bottom[cur_j].page == NULL) {
             continue;
@@ -1321,7 +1329,7 @@ void *pebs_policy_thread()
         }
       }
 
-      if(best_i == -1 || best_j == -1 || best_delta <= 0.0) {
+      if((best_i == -1 && best_j == -1) || best_delta <= 0.0) {
         // No suitable pair found; bail out;
         fprintf(colloid_log_f, ",no-suitable-pair-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
         // if(tmp_dram_page != NULL) {
@@ -1334,20 +1342,24 @@ void *pebs_policy_thread()
         // }
         goto out;
       }
-      assert(best_i >= 0 && best_j >= 0 && best_delta > 0.0);
+      assert((best_i >= 0 || best_j >= 0) && best_delta > 0.0);
       dram_i = (top == dram_page_freqs)?(best_i):(best_j);
       nvm_j = (top == nvm_page_freqs)?(best_i):(best_j);
       fprintf(colloid_log_f, "|best_i:%d;best_j:%d;best_delta:%lf", dram_i, nvm_j, best_delta);
 
-      pthread_mutex_lock(&(dram_page_freqs[dram_i].page->page_lock));
-      pthread_mutex_lock(&(nvm_page_freqs[nvm_j].page->page_lock));
+      if (dram_i != -1)
+        pthread_mutex_lock(&(dram_page_freqs[dram_i].page->page_lock));
+      if (nvm_j != -1)
+        pthread_mutex_lock(&(nvm_page_freqs[nvm_j].page->page_lock));
       // the selected pair of pages could have been unmapped while we were scanning
       // if so, just bail out
-      if(dram_page_freqs[dram_i].page->present == false || nvm_page_freqs[nvm_j].page->present == false) {
-        pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
-        pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
-       fprintf(colloid_log_f, ",page-freed-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
-       goto out;
+      if((dram_i != -1 && dram_page_freqs[dram_i].page->present == false) || (nvm_j != -1 && nvm_page_freqs[nvm_j].page->present == false)) {
+        if (nvm_j != -1)
+          pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
+        if (dram_i != -1)
+          pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
+        fprintf(colloid_log_f, ",page-freed-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
+        goto out;
       }
 
       // Both pages are present, and guaranteed to be so until we release their locks
@@ -1359,7 +1371,7 @@ void *pebs_policy_thread()
       // migrated_bytes = 0;
       // Move local page to remote
       np = NULL;
-      if(dram_page_freqs[dram_i].accesses == 0) {
+      if(dram_i == -1 || dram_page_freqs[dram_i].accesses == 0) {
         // No point in swapping 0 freq page if there are free pages
         // if(tmp_dram_page != NULL) {
         //   np = tmp_dram_page;
@@ -1370,7 +1382,8 @@ void *pebs_policy_thread()
       }
       if(np != NULL) {
         // Page not going to be migrated; just release lock
-        pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
+        if (dram_i != -1)
+          pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
       } else {
         p = dram_page_freqs[dram_i].page;
         dram_page_freqs[dram_i].page = NULL;
@@ -1410,7 +1423,7 @@ void *pebs_policy_thread()
       assert(np != NULL);
       
       // Move remote page to local
-      if(nvm_page_freqs[nvm_j].accesses > 0) {
+      if(nvm_j != -1 && nvm_page_freqs[nvm_j].accesses > 0) {
         p = nvm_page_freqs[nvm_j].page;
         nvm_page_freqs[nvm_j].page = NULL;
         assert(p != NULL);
@@ -1440,7 +1453,8 @@ void *pebs_policy_thread()
         pthread_mutex_unlock(&(p->page_lock));
       } else {
         // No point in moving 0 freq page; release page lock and just return np to dram free list
-        pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
+        if (nvm_j != -1)
+          pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
         enqueue_fifo(&dram_free_list, np);
       }
       // if(tmp_dram_page != NULL) {
